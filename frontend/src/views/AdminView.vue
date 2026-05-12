@@ -184,6 +184,9 @@
                   <div class="dept-tab">Tab: {{ dept.tab_name }}</div>
                 </div>
                 <div class="dept-actions">
+                  <button class="secondary btn-sm" @click="editDeptLayout(dept)">
+                    🧩 编辑布局
+                  </button>
                   <button class="secondary btn-sm" @click="renameDeptTab(dept)">
                     ✏️ 修改Tab
                   </button>
@@ -425,6 +428,88 @@ async function renameDeptTab(dept) {
     await adminAPI.updateTheaterTabName(dept.id, value)
     await loadAll()
     alert('✅ Tab 名称已更新')
+  } catch (err) {
+    alert(err.response?.data?.message || err.message || '更新失败')
+  }
+}
+
+function parseDisabledSeatsString(str) {
+  const raw = String(str || '').trim()
+  if (!raw) return []
+  return raw.split(',').map(s => {
+    const val = s.trim().toUpperCase()
+    if (!val) return null
+
+    const letterMatch = val.match(/^([A-Z]+)(\d+)$/)
+    if (letterMatch) {
+      const letters = letterMatch[1]
+      const row = letterMatch[2]
+      let col = 0
+      for (let i = 0; i < letters.length; i++) {
+        col = col * 26 + (letters.charCodeAt(i) - 64)
+      }
+      return `${row}-${col}`
+    }
+
+    if (/^\d+-\d+$/.test(val)) return val
+    return null
+  }).filter(Boolean)
+}
+
+function formatDisabledSeatsToA1(seatIds) {
+  const list = Array.isArray(seatIds) ? seatIds : []
+  const toLetters = (num) => {
+    let n = num
+    let s = ''
+    while (n > 0) {
+      const rem = (n - 1) % 26
+      s = String.fromCharCode(65 + rem) + s
+      n = Math.floor((n - 1) / 26)
+    }
+    return s || ''
+  }
+  return list.map(v => {
+    const [rRaw, cRaw] = String(v).split('-')
+    const r = parseInt(rRaw, 10)
+    const c = parseInt(cRaw, 10)
+    if (!Number.isInteger(r) || !Number.isInteger(c) || r < 1 || c < 1) return null
+    return `${toLetters(c)}${r}`
+  }).filter(Boolean).join(', ')
+}
+
+async function editDeptLayout(dept) {
+  const currentRows = String(dept?.rows ?? '')
+  const currentCols = String(dept?.cols ?? '')
+  const currentDoor = String(dept?.door_row ?? '0')
+  const currentAisles = Array.isArray(dept?.aisles) ? dept.aisles.join(',') : String(dept?.aisle_after ?? '5')
+  const currentDisabled = formatDisabledSeatsToA1(dept?.disabled_seats || [])
+
+  const nextRows = prompt('请输入行数（1-50）', currentRows)
+  if (nextRows === null) return
+  const nextCols = prompt('请输入列数（1-50）', currentCols)
+  if (nextCols === null) return
+  const nextAisles = prompt('请输入走道（在哪些列后添加，支持 4,8 这种逗号分隔）', currentAisles)
+  if (nextAisles === null) return
+  const nextDoor = prompt('请输入门口所在排（0=无门口）', currentDoor)
+  if (nextDoor === null) return
+  const nextDisabled = prompt('请输入禁止座位（例如：A1, B2 或 1-1 这种）', currentDisabled)
+  if (nextDisabled === null) return
+
+  const rows = parseInt(String(nextRows).trim(), 10)
+  const cols = parseInt(String(nextCols).trim(), 10)
+  const door_row = parseInt(String(nextDoor).trim(), 10)
+  const aisles = String(nextAisles || '').trim()
+  const disabled_seats = parseDisabledSeatsString(nextDisabled)
+
+  if (!Number.isInteger(rows) || rows < 1 || rows > 50) { alert('行数不合法'); return }
+  if (!Number.isInteger(cols) || cols < 1 || cols > 50) { alert('列数不合法'); return }
+  if (!Number.isInteger(door_row) || door_row < 0 || door_row > 50) { alert('门口排数不合法'); return }
+  if (!aisles) { alert('走道不能为空'); return }
+
+  try {
+    await adminAPI.updateTheater(dept.id, { rows, cols, aisles, door_row, disabled_seats })
+    await loadAll()
+    alert('✅ 科室布局已更新')
   } catch (err) {
     alert(err.response?.data?.message || err.message || '更新失败')
   }

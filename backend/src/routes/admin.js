@@ -115,6 +115,115 @@ router.post('/theaters', async (req, res) => {
   }
 });
 
+router.patch('/theaters/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const exists = await getAsync('SELECT id, rows, cols FROM theaters WHERE id = ?', [id]);
+    if (!exists) {
+      return res.status(404).json({ success: false, error: 'not_found', message: '科室不存在' });
+    }
+
+    const payload = req.body || {};
+
+    const updates = [];
+    const params = [];
+
+    if (payload.rows !== undefined) {
+      const rows = parseInt(payload.rows, 10);
+      if (!Number.isInteger(rows) || rows < 1 || rows > 50) {
+        return res.status(400).json({ success: false, error: 'invalid_rows', message: '行数必须在 1-50 之间' });
+      }
+      updates.push('rows = ?');
+      params.push(rows);
+    }
+
+    if (payload.cols !== undefined) {
+      const cols = parseInt(payload.cols, 10);
+      if (!Number.isInteger(cols) || cols < 1 || cols > 50) {
+        return res.status(400).json({ success: false, error: 'invalid_cols', message: '列数必须在 1-50 之间' });
+      }
+      updates.push('cols = ?');
+      params.push(cols);
+    }
+
+    if (payload.door_row !== undefined) {
+      const doorRow = parseInt(payload.door_row, 10);
+      if (!Number.isInteger(doorRow) || doorRow < 0 || doorRow > 50) {
+        return res.status(400).json({ success: false, error: 'invalid_door_row', message: '门口排数必须在 0-50 之间' });
+      }
+      updates.push('door_row = ?');
+      params.push(doorRow);
+    }
+
+    if (payload.aisles !== undefined || payload.aisle_after !== undefined) {
+      const raw = payload.aisles !== undefined ? payload.aisles : payload.aisle_after;
+      let aislesArr = [];
+      if (Array.isArray(raw)) {
+        aislesArr = raw.map(Number);
+      } else if (typeof raw === 'string') {
+        aislesArr = raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      } else if (raw !== null && raw !== undefined) {
+        const n = parseInt(raw, 10);
+        if (!isNaN(n)) aislesArr = [n];
+      }
+
+      aislesArr = Array.from(new Set(aislesArr))
+        .filter(n => Number.isInteger(n) && n > 0)
+        .sort((a, b) => a - b);
+
+      if (aislesArr.length === 0) aislesArr = [5];
+
+      const colsToValidate = payload.cols !== undefined ? parseInt(payload.cols, 10) : parseInt(exists.cols, 10);
+      const invalidAisle = aislesArr.find(a => a >= colsToValidate);
+      if (invalidAisle !== undefined) {
+        return res.status(400).json({ success: false, error: 'invalid_aisles', message: '走道位置必须小于列数' });
+      }
+
+      updates.push('aisles = ?');
+      params.push(JSON.stringify(aislesArr));
+      updates.push('aisle_after = ?');
+      params.push(aislesArr[0]);
+    }
+
+    if (payload.disabled_seats !== undefined || payload.disabled_seats_str !== undefined) {
+      let disabledSeats = [];
+      if (Array.isArray(payload.disabled_seats)) {
+        disabledSeats = payload.disabled_seats.map(String);
+      } else if (typeof payload.disabled_seats === 'string') {
+        try {
+          const parsed = JSON.parse(payload.disabled_seats);
+          if (Array.isArray(parsed)) disabledSeats = parsed.map(String);
+        } catch (_) {
+          disabledSeats = payload.disabled_seats.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      } else if (typeof payload.disabled_seats_str === 'string') {
+        disabledSeats = payload.disabled_seats_str.split(',').map(s => s.trim()).filter(Boolean);
+      }
+
+      disabledSeats = Array.from(new Set(disabledSeats.map(String))).filter(Boolean);
+      updates.push('disabled_seats = ?');
+      params.push(JSON.stringify(disabledSeats));
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, error: 'no_updates', message: '没有可更新的字段' });
+    }
+
+    params.push(id);
+    await runAsync(`UPDATE theaters SET ${updates.join(', ')} WHERE id = ?`, params);
+
+    const updated = await getAsync(
+      'SELECT id, name, rows, cols, aisle_after, aisles, door_row, class_time, subject, teacher, tab_name, opening_time, disabled_seats FROM theaters WHERE id = ?',
+      [id]
+    );
+
+    res.json({ success: true, message: '科室已更新', data: updated });
+  } catch (err) {
+    console.error('Error updating theater:', err);
+    res.status(500).json({ success: false, error: 'update_failed', message: err.message });
+  }
+});
+
 router.patch('/theaters/:id/tab-name', async (req, res) => {
   try {
     const { id } = req.params;
