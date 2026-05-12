@@ -183,9 +183,14 @@
                   </div>
                   <div class="dept-tab">Tab: {{ dept.tab_name }}</div>
                 </div>
-                <button class="danger btn-sm" @click="deleteDept(dept.id, dept.name)">
-                  🗑️ 删除
-                </button>
+                <div class="dept-actions">
+                  <button class="secondary btn-sm" @click="renameDeptTab(dept)">
+                    ✏️ 修改Tab
+                  </button>
+                  <button class="danger btn-sm" @click="deleteDept(dept.id, dept.name)">
+                    🗑️ 删除
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -404,6 +409,24 @@ async function deleteDept(id, name) {
     await loadAll()
   } catch (err) {
     alert(err.response?.data?.message || err.message || '删除失败')
+  }
+}
+
+async function renameDeptTab(dept) {
+  const current = String(dept?.tab_name || '').trim()
+  const next = prompt('请输入该科室在 Google Sheets 里的 Tab 名称（需要与 Sheet 标签页标题完全一致）', current)
+  if (next === null) return
+  const value = String(next || '').trim()
+  if (!value) {
+    alert('Tab 名称不能为空')
+    return
+  }
+  try {
+    await adminAPI.updateTheaterTabName(dept.id, value)
+    await loadAll()
+    alert('✅ Tab 名称已更新')
+  } catch (err) {
+    alert(err.response?.data?.message || err.message || '更新失败')
   }
 }
 

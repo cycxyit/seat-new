@@ -70,6 +70,7 @@ export const adminAPI = {
   getConfig:    ()     => api.get('/admin/config'),
   updateConfig: (data) => api.put('/admin/config', data),
   createTheater: (data) => api.post('/admin/theaters', data),
+  updateTheaterTabName: (id, tab_name) => api.patch(`/admin/theaters/${id}/tab-name`, { tab_name }),
   deleteTheater: (id)   => api.delete(`/admin/theaters/${id}`),
   getSyncStatus: () => api.get('/admin/sync-status'),
   triggerSync: () => api.post('/admin/sync')

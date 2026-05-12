@@ -115,6 +115,33 @@ router.post('/theaters', async (req, res) => {
   }
 });
 
+router.patch('/theaters/:id/tab-name', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tab_name } = req.body || {};
+    const newTabName = String(tab_name || '').trim();
+    if (!newTabName) {
+      return res.status(400).json({ success: false, error: 'invalid_input', message: 'tab_name 不能为空' });
+    }
+
+    const exists = await getAsync('SELECT id FROM theaters WHERE id = ?', [id]);
+    if (!exists) {
+      return res.status(404).json({ success: false, error: 'not_found', message: '科室不存在' });
+    }
+
+    await runAsync('UPDATE theaters SET tab_name = ? WHERE id = ?', [newTabName, id]);
+    const updated = await getAsync(
+      'SELECT id, name, rows, cols, aisle_after, aisles, door_row, class_time, subject, teacher, tab_name, opening_time, disabled_seats FROM theaters WHERE id = ?',
+      [id]
+    );
+
+    res.json({ success: true, message: 'Tab 名称已更新', data: updated });
+  } catch (err) {
+    console.error('Error updating theater tab_name:', err);
+    res.status(500).json({ success: false, error: 'update_failed', message: err.message });
+  }
+});
+
 // ─── 删除科室 ───────────────────────────────────────────────
 router.delete('/theaters/:id', async (req, res) => {
   try {
