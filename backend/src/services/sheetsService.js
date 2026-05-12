@@ -531,6 +531,78 @@ export async function createTabInSheet(options) {
   }
 }
 
+export async function updateTheaterTabLayoutInSheet(options) {
+  if (!sheetsClient) return false;
+  const {
+    tabName,
+    rows,
+    cols,
+    aisles,
+    doorRow,
+    disabledSeats = [],
+    previousDisabledSeats = [],
+    clearAll = false
+  } = options || {};
+
+  const title = String(tabName || '').trim();
+  if (!title) return false;
+
+  const spreadsheetId = getSpreadsheetId();
+  if (!spreadsheetId) return false;
+
+  const meta = await sheetsClient.spreadsheets.get({ spreadsheetId });
+  const exists = meta.data.sheets.some(s => s.properties.title === title);
+  if (!exists) return false;
+
+  const aisleList = normalizeAisles(aisles);
+  const maxPhysCols = parseInt(cols, 10) + aisleList.length;
+  const endColLetter = colToLetter(maxPhysCols + 1);
+  const endRow = parseInt(rows, 10) * 2 + 2;
+
+  if (clearAll) {
+    await sheetsClient.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `'${title}'!A3:${endColLetter}${endRow}`
+    });
+  }
+
+  const removed = new Set(previousDisabledSeats.map(String));
+  for (const s of disabledSeats.map(String)) removed.delete(s);
+  const removedArr = Array.from(removed);
+  if (removedArr.length > 0) {
+    const clearUpdates = [];
+    for (const seat of removedArr) {
+      const [rRaw, cRaw] = String(seat).split('-');
+      const r = parseInt(rRaw, 10);
+      const c = parseInt(cRaw, 10);
+      if (!Number.isInteger(r) || !Number.isInteger(c)) continue;
+      const { physicalRow, physicalCol } = getPhysicalPosition(r, c, aisleList);
+      const cellRef = `${colToLetter(physicalCol)}${physicalRow}`;
+      clearUpdates.push({ range: `'${title}'!${cellRef}`, values: [['']] });
+    }
+    if (clearUpdates.length > 0) {
+      await sheetsClient.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: { valueInputOption: 'USER_ENTERED', data: clearUpdates }
+      });
+    }
+  }
+
+  await drawGridElements(
+    spreadsheetId,
+    title,
+    parseInt(rows, 10),
+    parseInt(cols, 10),
+    parseInt(rows, 10) * 2 + 2,
+    aisleList,
+    parseInt(doorRow, 10) || 0,
+    maxPhysCols,
+    disabledSeats
+  );
+
+  return true;
+}
+
 async function drawGridElements(spreadsheetId, tabName, rows, cols, maxPhysRows, aisles, doorRow, maxPhysCols, disabledSeats = []) {
   const headerArr = [''];
   let colCounter = 1;

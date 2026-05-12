@@ -2,12 +2,35 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { runAsync, getAsync, allAsync } from '../db/init.js';
 import { validateAdminKey } from '../middleware/auth.js';
-import { createTabInSheet } from '../services/sheetsService.js';
+import { createTabInSheet, updateTheaterTabLayoutInSheet } from '../services/sheetsService.js';
 import { syncDatabaseFromSheet, getDbSyncStatus } from '../services/dbSyncService.js';
 
 const router = express.Router();
 
 router.use(validateAdminKey);
+
+function parseJsonArray(value, fallback = []) {
+  try {
+    const parsed = JSON.parse(value ?? 'null');
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function getConfirmedSeatSetFromDb(theater_id) {
+  const rows = await allAsync('SELECT seats FROM bookings WHERE theater_id = ? AND status = ?', [theater_id, 'confirmed']);
+  const seatSet = new Set();
+  for (const row of rows) {
+    try {
+      const seats = JSON.parse(row.seats || '[]');
+      if (Array.isArray(seats)) seats.forEach(s => seatSet.add(String(s)));
+    } catch (_) {
+      // skip malformed row
+    }
+  }
+  return seatSet;
+}
 
 // ─── 获取全局配置 ───────────────────────────────────────────
 router.get('/config', async (req, res) => {
@@ -118,12 +141,27 @@ router.post('/theaters', async (req, res) => {
 router.patch('/theaters/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const exists = await getAsync('SELECT id, rows, cols FROM theaters WHERE id = ?', [id]);
-    if (!exists) {
+    const current = await getAsync(
+      'SELECT id, name, rows, cols, aisle_after, aisles, door_row, class_time, subject, teacher, tab_name, opening_time, disabled_seats FROM theaters WHERE id = ?',
+      [id]
+    );
+    if (!current) {
       return res.status(404).json({ success: false, error: 'not_found', message: '科室不存在' });
     }
 
     const payload = req.body || {};
+
+    const prevRows = parseInt(current.rows, 10);
+    const prevCols = parseInt(current.cols, 10);
+    const prevAisles = parseJsonArray(current.aisles || '[5]', [5]).map(Number);
+    const prevDoorRow = parseInt(current.door_row || 0, 10);
+    const prevDisabledSeats = parseJsonArray(current.disabled_seats || '[]', []).map(String);
+
+    let nextRows = prevRows;
+    let nextCols = prevCols;
+    let nextAisles = prevAisles;
+    let nextDoorRow = prevDoorRow;
+    let nextDisabledSeats = prevDisabledSeats;
 
     const updates = [];
     const params = [];
@@ -133,6 +171,7 @@ router.patch('/theaters/:id', async (req, res) => {
       if (!Number.isInteger(rows) || rows < 1 || rows > 50) {
         return res.status(400).json({ success: false, error: 'invalid_rows', message: '行数必须在 1-50 之间' });
       }
+      nextRows = rows;
       updates.push('rows = ?');
       params.push(rows);
     }
@@ -142,6 +181,7 @@ router.patch('/theaters/:id', async (req, res) => {
       if (!Number.isInteger(cols) || cols < 1 || cols > 50) {
         return res.status(400).json({ success: false, error: 'invalid_cols', message: '列数必须在 1-50 之间' });
       }
+      nextCols = cols;
       updates.push('cols = ?');
       params.push(cols);
     }
@@ -151,6 +191,7 @@ router.patch('/theaters/:id', async (req, res) => {
       if (!Number.isInteger(doorRow) || doorRow < 0 || doorRow > 50) {
         return res.status(400).json({ success: false, error: 'invalid_door_row', message: '门口排数必须在 0-50 之间' });
       }
+      nextDoorRow = doorRow;
       updates.push('door_row = ?');
       params.push(doorRow);
     }
@@ -173,12 +214,12 @@ router.patch('/theaters/:id', async (req, res) => {
 
       if (aislesArr.length === 0) aislesArr = [5];
 
-      const colsToValidate = payload.cols !== undefined ? parseInt(payload.cols, 10) : parseInt(exists.cols, 10);
-      const invalidAisle = aislesArr.find(a => a >= colsToValidate);
+      const invalidAisle = aislesArr.find(a => a >= nextCols);
       if (invalidAisle !== undefined) {
         return res.status(400).json({ success: false, error: 'invalid_aisles', message: '走道位置必须小于列数' });
       }
 
+      nextAisles = aislesArr;
       updates.push('aisles = ?');
       params.push(JSON.stringify(aislesArr));
       updates.push('aisle_after = ?');
@@ -201,12 +242,41 @@ router.patch('/theaters/:id', async (req, res) => {
       }
 
       disabledSeats = Array.from(new Set(disabledSeats.map(String))).filter(Boolean);
+      nextDisabledSeats = disabledSeats;
       updates.push('disabled_seats = ?');
       params.push(JSON.stringify(disabledSeats));
     }
 
     if (updates.length === 0) {
       return res.status(400).json({ success: false, error: 'no_updates', message: '没有可更新的字段' });
+    }
+
+    const structuralChange =
+      nextRows !== prevRows ||
+      nextCols !== prevCols ||
+      JSON.stringify(nextAisles) !== JSON.stringify(prevAisles);
+
+    if (structuralChange) {
+      const seatSet = await getConfirmedSeatSetFromDb(id);
+      if (seatSet.size > 0) {
+        return res.status(409).json({
+          success: false,
+          error: 'layout_locked',
+          message: '该科室已有学生预约，不能修改布局/行列/走道。请新建科室或先清空该科室预约数据。'
+        });
+      }
+    }
+
+    if (payload.disabled_seats !== undefined || payload.disabled_seats_str !== undefined) {
+      const seatSet = await getConfirmedSeatSetFromDb(id);
+      const conflict = nextDisabledSeats.find(s => seatSet.has(String(s)));
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          error: 'disabled_conflict',
+          message: `禁止座位包含已被预约的位置：${conflict}，请先释放该座位或不要禁用它。`
+        });
+      }
     }
 
     params.push(id);
@@ -216,6 +286,21 @@ router.patch('/theaters/:id', async (req, res) => {
       'SELECT id, name, rows, cols, aisle_after, aisles, door_row, class_time, subject, teacher, tab_name, opening_time, disabled_seats FROM theaters WHERE id = ?',
       [id]
     );
+
+    try {
+      await updateTheaterTabLayoutInSheet({
+        tabName: current.tab_name || current.name,
+        rows: nextRows,
+        cols: nextCols,
+        aisles: nextAisles,
+        doorRow: nextDoorRow,
+        previousDisabledSeats: prevDisabledSeats,
+        disabledSeats: nextDisabledSeats,
+        clearAll: structuralChange
+      });
+    } catch (sheetErr) {
+      console.warn('⚠️ Failed to update sheet layout:', sheetErr.message);
+    }
 
     res.json({ success: true, message: '科室已更新', data: updated });
   } catch (err) {
